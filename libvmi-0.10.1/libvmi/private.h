@@ -1,0 +1,416 @@
+/* The LibVMI Library is an introspection library that simplifies access to 
+ * memory in a target virtual machine or in a file containing a dump of 
+ * a system's physical memory.  LibVMI is based on the XenAccess Library.
+ *
+ * Copyright 2011 Sandia Corporation. Under the terms of Contract
+ * DE-AC04-94AL85000 with Sandia Corporation, the U.S. Government
+ * retains certain rights in this software.
+ *
+ * Author: Bryan D. Payne (bdpayne@acm.org)
+ *
+ * This file is part of LibVMI.
+ *
+ * LibVMI is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU Lesser General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your
+ * option) any later version.
+ *
+ * LibVMI is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
+ * License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with LibVMI.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#ifndef PRIVATE_H
+#define PRIVATE_H
+#define _GNU_SOURCE
+
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif /* HAVE_CONFIG_H */
+
+#include <glib.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <math.h>
+#include <ctype.h>
+#include <time.h>
+#include <inttypes.h>
+#include "libvmi.h"
+
+/**
+ * @brief LibVMI Instance.
+ *
+ * This struct holds all of the relavent information for an instance of
+ * LibVMI.  Each time a new domain is accessed, a new instance must
+ * be created using the vmi_init function.  When you are done with an instance,
+ * its resources can be freed using the vmi_destroy function.
+ */
+struct vmi_instance {
+
+    vmi_mode_t mode;        /**< VMI_FILE, VMI_XEN, VMI_KVM */
+
+    uint32_t flags;         /**< flags passed to init function */
+
+    uint32_t init_mode;     /**< VMI_INIT_PARTIAL or VMI_INIT_COMPLETE */
+
+    vmi_config_t config;    /**< configuration */
+
+    uint32_t config_mode;     /**< VMI_CONFIG_NONE/FILE/STRING/GHASHTABLE */
+
+    char *sysmap;           /**< system map file for domain's running kernel */
+
+    char *image_type;       /**< image type that we are accessing */
+
+    char *image_type_complete;  /**< full path for file images */
+
+    uint32_t page_offset;   /**< page offset for this instance */
+
+    uint32_t page_shift;    /**< page shift for last mapped page */
+
+    uint32_t page_size;     /**< page size for last mapped page */
+
+    addr_t kpgd;            /**< kernel page global directory */
+
+    addr_t init_task;       /**< address of task struct for init */
+
+    os_t os_type;           /**< type of os: VMI_OS_LINUX, etc */
+
+    int pae;                /**< nonzero if PAE is enabled */
+
+    int pse;                /**< nonzero if PSE is enabled */
+
+    int lme;                /**< nonzero if LME is enabled */
+
+    reg_t cr3;              /**< value in the CR3 register */
+
+    page_mode_t page_mode;  /**< paging mode in use */
+
+    uint64_t size;          /**< total size of target's memory */
+
+    int hvm;                /**< nonzero if HVM */
+
+    union {
+        struct linux_instance {
+
+            int tasks_offset;    /**< task_struct->tasks */
+
+            int mm_offset;       /**< task_struct->mm */
+
+            int pid_offset;      /**< task_struct->pid */
+
+            int pgd_offset;      /**< mm_struct->pgd */
+
+            int name_offset;     /**< task_struct->comm */
+        } linux_instance;
+        struct windows_instance {
+
+            addr_t ntoskrnl;          /**< base phys address for ntoskrnl image */
+
+            addr_t ntoskrnl_va;       /**< base virt address for ntoskrnl image */
+
+            addr_t kdversion_block;   /**< kernel virtual address for start of KdVersionBlock structure */
+
+            addr_t sysproc;      /**< physical address for the system process */
+
+            int tasks_offset;    /**< EPROCESS->ActiveProcessLinks */
+
+            int pdbase_offset;   /**< EPROCESS->Pcb.DirectoryTableBase */
+
+            int pid_offset;      /**< EPROCESS->UniqueProcessId */
+
+            int pname_offset;    /**< EPROCESS->ImageFileName */
+
+            win_ver_t version;   /**< version of Windows */
+        } windows_instance;
+    } os;
+
+    GHashTable *pid_cache;  /**< hash table to hold the PID cache data */
+
+    GHashTable *sym_cache;  /**< hash table to hold the sym cache data */
+
+    GHashTable *rva_cache;  /**< hash table to hold the rva cache data */
+
+    GHashTable *v2p_cache;  /**< hash table to hold the v2p cache data */
+
+    void *driver;           /**< driver-specific information */
+
+    GHashTable *memory_cache;  /**< hash table for memory cache */
+
+    GList *memory_cache_lru;  /**< list holding the most recently used pages */
+
+    uint32_t memory_cache_age; /**< max age of memory cache entry */
+
+    uint32_t memory_cache_size;/**< current size of memory cache */
+
+    uint32_t memory_cache_size_max;/**< max size of memory cache */
+
+    unsigned int num_vcpus; /**< number of VCPUs used by this instance */
+
+    GHashTable *mem_events; /**< mem event to functions mapping (key: physical address) */
+
+    GHashTable *reg_events; /**< reg event to functions mapping (key: reg) */
+
+    GHashTable *ss_events; /**< single step event to functions mapping (key: vcpu_id) */
+
+    gboolean shutting_down; /**< flag indicating that libvmi is shutting down */
+};
+
+/** Page-level memevent struct to also hold byte-level events in the embedded hashtable */
+typedef struct memevent_page {
+
+    vmi_mem_access_t access_flag; /**< combined page access flag */
+    vmi_event_t *event; /**< page event registered */
+    addr_t key; /**< page # */
+
+    GHashTable  *byte_events; /**< byte events */
+
+} memevent_page_t;
+
+/** Windows' UNICODE_STRING structure (x86) */
+typedef struct _windows_unicode_string32 {
+    uint16_t length;
+    uint16_t maximum_length;
+    uint32_t pBuffer;   // pointer to string contents
+} __attribute__ ((packed))
+    win32_unicode_string_t;
+
+/** Windows' UNICODE_STRING structure (x64) */
+    typedef struct _windows_unicode_string64 {
+        uint16_t length;
+        uint16_t maximum_length;
+        uint64_t pBuffer;   // pointer to string contents
+    } __attribute__ ((packed))
+    win64_unicode_string_t;
+
+/*----------------------------------------------
+ * convenience.c
+ */
+#ifndef VMI_DEBUG
+#define dbprint(format, args...) ((void)0)
+#else
+    void dbprint(
+    char *format,
+    ...) __attribute__((format(printf,1,2)));
+#endif
+    void errprint(
+    char *format,
+    ...) __attribute__((format(printf,1,2)));
+    void warnprint(
+    char *format,
+    ...) __attribute__((format(printf,1,2)));
+
+#define safe_malloc(size) safe_malloc_ (size, __FILE__, __LINE__)
+    void *safe_malloc_(
+    size_t size,
+    char const *file,
+    int line);
+    unsigned long get_reg32(
+    reg_t r);
+    int vmi_get_bit(
+    reg_t reg,
+    int bit);
+    addr_t aligned_addr(
+    vmi_instance_t vmi,
+    addr_t addr);
+    int is_addr_aligned(
+    vmi_instance_t vmi,
+    addr_t addr);
+
+/*-------------------------------------
+ * cache.c
+ */
+    void pid_cache_init(
+    vmi_instance_t vmi);
+    void pid_cache_destroy(
+    vmi_instance_t vmi);
+    status_t pid_cache_get(
+    vmi_instance_t vmi,
+    int pid,
+    addr_t *dtb);
+    void pid_cache_set(
+    vmi_instance_t vmi,
+    int pid,
+    addr_t dtb);
+    status_t pid_cache_del(
+    vmi_instance_t vmi,
+    int pid);
+    void pid_cache_flush(
+    vmi_instance_t vmi);
+
+    void sym_cache_init(
+    vmi_instance_t vmi);
+    void sym_cache_destroy(
+    vmi_instance_t vmi);
+    status_t sym_cache_get(
+    vmi_instance_t vmi,
+    addr_t base_addr,
+    uint32_t pid,
+    char *sym,
+    addr_t *va);
+    void sym_cache_set(
+    vmi_instance_t vmi,
+    addr_t base_addr,
+    uint32_t pid,
+    char *sym,
+    addr_t va);
+    status_t sym_cache_del(
+    vmi_instance_t vmi,
+    addr_t base_addr,
+    uint32_t pid,
+    char *sym);
+    void sym_cache_flush(
+    vmi_instance_t vmi);
+
+    void v2p_cache_init(
+    vmi_instance_t vmi);
+    void v2p_cache_destroy(
+    vmi_instance_t vmi);
+    status_t v2p_cache_get(
+    vmi_instance_t vmi,
+    addr_t va,
+    addr_t dtb,
+    addr_t *pa);
+    void v2p_cache_set(
+    vmi_instance_t vmi,
+    addr_t va,
+    addr_t dtb,
+    addr_t pa);
+    status_t v2p_cache_del(
+    vmi_instance_t vmi,
+    addr_t va,
+    addr_t dtb);
+    void v2p_cache_flush(
+    vmi_instance_t vmi);
+
+/*-----------------------------------------
+ * core.c
+ */
+    status_t
+    get_memory_layout(
+    vmi_instance_t vmi,
+    page_mode_t *set_pm,
+    reg_t *set_cr3,
+    int *set_pae,
+    int *set_pse,
+    int *set_lme);
+
+/*-----------------------------------------
+ * memory.c
+ */
+    void *vmi_read_page(
+    vmi_instance_t vmi,
+    addr_t frame_num);
+
+/*-----------------------------------------
+ * os/linux/...
+ */
+    status_t linux_init(
+    vmi_instance_t instance);
+    status_t linux_system_map_symbol_to_address(
+    vmi_instance_t instance,
+    char *symbol,
+    addr_t *address);
+    addr_t linux_pid_to_pgd(
+    vmi_instance_t vmi,
+    int pid);
+    int linux_pgd_to_pid(
+    vmi_instance_t vmi,
+    addr_t pgd);
+
+/*-----------------------------------------
+ * os/windows/...
+ */
+    typedef int (
+    *check_magic_func) (
+    uint32_t);
+
+    status_t windows_init(
+    vmi_instance_t instance);
+    addr_t windows_find_eprocess(
+    vmi_instance_t instance,
+    char *name);
+    status_t windows_export_to_rva(
+    vmi_instance_t,
+    char *,
+    addr_t,
+    uint32_t,
+    addr_t *);
+    status_t windows_kpcr_lookup(
+    vmi_instance_t vmi,
+    char *symbol,
+    addr_t *address);
+    addr_t windows_find_cr3(
+    vmi_instance_t vmi);
+    int find_pname_offset(
+    vmi_instance_t vmi,
+    check_magic_func check);
+    win_ver_t find_windows_version(
+    vmi_instance_t vmi,
+    addr_t KdVersionBlock);
+    status_t validate_pe_image(
+    const uint8_t * const image,
+    size_t len);
+    addr_t windows_pid_to_pgd(
+    vmi_instance_t vmi,
+    int pid);
+    int windows_pgd_to_pid(
+    vmi_instance_t vmi,
+    addr_t pgd);
+    status_t
+    windows_symbol_to_address(
+    vmi_instance_t vmi,
+    char *symbol,
+    addr_t *address);
+
+    addr_t windows_find_eprocess_list_pid(vmi_instance_t vmi, int pid);
+    addr_t windows_find_eprocess_list_pgd(vmi_instance_t vmi, addr_t pgd);
+
+/*-----------------------------------------
+ * strmatch.c
+ */
+
+    void *boyer_moore_init(
+    unsigned char *x,
+    int m);
+    int boyer_moore2(
+    void *bm,
+    unsigned char *y,
+    int n);
+    void boyer_moore_fini(
+    void *bm);
+
+    int boyer_moore(
+    unsigned char *x,
+    int m,
+    unsigned char *y,
+    int n);
+
+/*-----------------------------------------
+ * performance.c
+ */
+    void timer_start(
+    );
+    void timer_stop(
+    const char *id);
+
+/*----------------------------------------------
+ * events.c
+ */
+    void events_init(
+        vmi_instance_t vmi);
+    void events_destroy(
+        vmi_instance_t vmi);
+    gboolean event_entry_free (
+        gpointer key,
+        gpointer value,
+        gpointer data);
+    typedef GHashTableIter event_iter_t;
+    #define for_each_event(vmi, iter, table, key, val) \
+        g_hash_table_iter_init(&iter, table); \
+        while(g_hash_table_iter_next(&iter,(void**)key,(void**)val))
+
+#endif /* PRIVATE_H */
